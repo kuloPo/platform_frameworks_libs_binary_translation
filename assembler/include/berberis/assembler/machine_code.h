@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <string>
 
+#include "berberis/assembler/code_cost.h"
 #include "berberis/base/arena_alloc.h"
 #include "berberis/base/arena_vector.h"
 #include "berberis/base/bit_util.h"
@@ -59,12 +60,25 @@ using RecoveryMap = ForeverMap<uintptr_t, uintptr_t>;
 // NOTE: this class is not intended for concurrent usage by multiple threads.
 class MachineCode {
  public:
-  MachineCode() : code_(&arena_), relocations_(&arena_) {
+  explicit MachineCode(bool collect_cost = false)
+      : code_(&arena_), relocations_(&arena_), cost_insns_(&arena_), collect_cost_(collect_cost) {
     // The amount is chosen according to the performance of spec2000 benchmarks.
     code_.reserve(1024);
   }
 
   Arena* arena() { return &arena_; }
+
+  bool collect_cost() const { return collect_cost_; }
+  const ArenaVector<CodeCostInsn>& cost_insns() const { return cost_insns_; }
+
+  void RecordInsnCost(uint32_t begin, uint16_t weight, CodeCostFlow flow) {
+    // A hand-written assembler helper may call a generated instruction.
+    // Keep the inner instruction records instead of double counting it.
+    if (begin == code_offset() || (!cost_insns_.empty() && cost_insns_.back().begin >= begin)) {
+      return;
+    }
+    cost_insns_.push_back({begin, code_offset(), weight, flow});
+  }
 
   // TODO(eaeltsin): this will include const pool size when supported.
   [[nodiscard]] uint32_t install_size() const { return code_.size(); }
@@ -137,6 +151,8 @@ class MachineCode {
   Arena arena_;
   ArenaVector<uint8_t> code_;
   RelocationList relocations_;
+  ArenaVector<CodeCostInsn> cost_insns_;
+  bool collect_cost_;
 
   DISALLOW_COPY_AND_ASSIGN(MachineCode);
 };

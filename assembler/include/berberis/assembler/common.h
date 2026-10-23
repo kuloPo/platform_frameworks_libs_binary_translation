@@ -61,6 +61,28 @@ class AssemblerBase {
 
   uint32_t pc() const { return code_->code_offset(); }
 
+  class ScopedInsnCost {
+   public:
+    constexpr ScopedInsnCost(MachineCode* code, uint16_t weight, CodeCostFlow flow)
+        : code_(code), begin_(code ? code->code_offset() : 0), weight_(weight), flow_(flow) {}
+    constexpr ~ScopedInsnCost() {
+      if (code_) {
+        code_->RecordInsnCost(begin_, weight_, flow_);
+      }
+    }
+
+   private:
+    MachineCode* code_;
+    uint32_t begin_;
+    uint16_t weight_;
+    CodeCostFlow flow_;
+    DISALLOW_COPY_AND_ASSIGN(ScopedInsnCost);
+  };
+
+  ScopedInsnCost TrackInsnCost(uint16_t weight, CodeCostFlow flow = CodeCostFlow::kNext) {
+    return {code_->collect_cost() ? code_ : nullptr, weight, flow};
+  }
+
   // GNU-assembler inspired names: https://sourceware.org/binutils/docs-2.42/as.html#g_t8byte
   template <typename... Args>
   void Byte(Args... args) {

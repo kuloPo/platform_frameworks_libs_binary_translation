@@ -235,6 +235,7 @@ class Assembler : public AssemblerBase {
   }
 
   void Nop(uint32_t bytes) {
+    auto cost_scope = TrackInsnCost(0, CodeCostFlow::kNext);
     static const uint32_t kNumNops = 15;
     static const uint8_t nop1[] = {0x90};
     static const uint8_t nop2[] = {0x66, 0x90};
@@ -293,6 +294,7 @@ class Assembler : public AssemblerBase {
 
   // Flow control.
   void JmpRel(int32_t offset) {
+    auto cost_scope = TrackInsnCost(2, CodeCostFlow::kJump);
     CHECK_GE(offset, INT32_MIN + 2);
     int32_t short_offset = offset - 2;
     if (IsInRange<int8_t>(short_offset)) {
@@ -306,6 +308,7 @@ class Assembler : public AssemblerBase {
   }
 
   void Call(int32_t offset) {
+    auto cost_scope = TrackInsnCost(20, CodeCostFlow::kUnknown);
     CHECK_GE(offset, INT32_MIN + 5);
     Emit8(0xe8);
     Emit32(offset - 5);
@@ -319,6 +322,7 @@ class Assembler : public AssemblerBase {
     if (cc == Condition::kNever) {
       return;
     }
+    auto cost_scope = TrackInsnCost(2, CodeCostFlow::kBranch);
     CHECK_EQ(0, static_cast<uint8_t>(cc) & 0xf0);
     CHECK_GE(offset, INT32_MIN + 2);
     int32_t short_offset = offset - 2;
@@ -873,6 +877,7 @@ constexpr inline void Assembler<DerivedAssemblerType>::Call(const Label& label) 
     int32_t offset = label.position() - pc();
     Call(offset);
   } else {
+    auto cost_scope = TrackInsnCost(20, CodeCostFlow::kUnknown);
     Emit8(0xe8);
     Emit32(0xffff'fffc);
     jumps_.push_back(Jump{&label, pc() - 4, false});
@@ -894,6 +899,7 @@ constexpr inline void Assembler<DerivedAssemblerType>::Jcc(Condition cc, const L
     int32_t offset = label.position() - pc();
     JccRel(cc, offset);
   } else {
+    auto cost_scope = TrackInsnCost(2, CodeCostFlow::kBranch);
     Emit16(0x800f | (static_cast<uint8_t>(cc) << 8));
     Emit32(0xffff'fffc);
     jumps_.push_back(Jump{&label, pc() - 4, false});
@@ -908,6 +914,7 @@ constexpr inline void Assembler<DerivedAssemblerType>::Jmp(const Label& label) {
     int32_t offset = label.position() - pc();
     JmpRel(offset);
   } else {
+    auto cost_scope = TrackInsnCost(2, CodeCostFlow::kJump);
     Emit8(0xe9);
     Emit32(0xffff'fffc);
     jumps_.push_back(Jump{&label, pc() - 4, false});
@@ -934,6 +941,7 @@ constexpr inline void Assembler<DerivedAssemblerType>::ResolveJumps() {
 
 template <typename DerivedAssemblerType>
 constexpr inline void Assembler<DerivedAssemblerType>::Xchgl(Register dest, Register src) {
+  auto cost_scope = TrackInsnCost(3, CodeCostFlow::kNext);
   if (DerivedAssemblerType::IsAccumulator(src) || DerivedAssemblerType::IsAccumulator(dest)) {
     Register other = DerivedAssemblerType::IsAccumulator(src) ? dest : src;
     EmitInstruction<0x90>(SizeAgnosticRegister(other));

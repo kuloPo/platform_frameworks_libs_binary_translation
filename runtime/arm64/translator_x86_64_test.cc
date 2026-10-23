@@ -46,6 +46,9 @@ std::tuple<bool, HostCodePiece, size_t, GuestCodeEntry::Kind> TryLiteTranslateAn
     LiteTranslateParams params = LiteTranslateParams());
 std::tuple<bool, HostCodePiece, size_t, GuestCodeEntry::Kind> HeavyOptimizeAndInstallRegion(
     GuestAddr pc);
+std::tuple<bool, HostCodePiece, size_t, GuestCodeEntry::Kind> HeavyOptimizeAndInstallRegion(
+    GuestAddr pc,
+    bool use_cost_model);
 
 namespace {
 
@@ -119,11 +122,9 @@ TEST_F(Arm64RuntimeTranslator, HeavyOptimizeUnsupportedRegion) {
   EXPECT_EQ(guest_size, 0U);
 }
 
-// A region the heavy optimizer fully translates but that is smaller than the
-// gear-up threshold (GetGearUpMinInsns, default 20) is declined: gearing up a
-// tiny region cannot recoup the optimizing tier's codegen overhead, so the
-// wrapper returns failure and the runtime keeps the lite region. This exercises
-// runtime/arm64/translator_x86_64.cc's gear-up policy, which riscv64 lacks.
+// The length policy declines a fully translated straight-line region below
+// GetGearUpMinInsns() (20 by default), leaving the caller to install settled
+// lite code.
 TEST_F(Arm64RuntimeTranslator, HeavyOptimizeDeclinesSmallSupportedRegion) {
   static const uint32_t code[] = {
       0xd2800220,  // movz x0, #0x11
@@ -133,7 +134,7 @@ TEST_F(Arm64RuntimeTranslator, HeavyOptimizeDeclinesSmallSupportedRegion) {
   ScopedGuestExecRegion exec_region(ToGuestAddr(code), sizeof(code));
 
   auto [success, host_code_piece, guest_size, kind] =
-      HeavyOptimizeAndInstallRegion(ToGuestAddr(code));
+      HeavyOptimizeAndInstallRegion(ToGuestAddr(code), false);
 
   // Fully heavy-translatable, but 3 < 20 instructions -> gear-up declined.
   EXPECT_FALSE(success);
@@ -160,6 +161,103 @@ TEST_F(Arm64RuntimeTranslator, HeavyOptimizeLargeSupportedRegion) {
   EXPECT_GT(host_code_piece.size, 0U);
   EXPECT_EQ(guest_size, sizeof(code));
   EXPECT_EQ(kind, GuestCodeEntry::Kind::kHeavyOptimized);
+}
+
+// The cost model may promote a short region when dead guest writes disappear.
+TEST_F(Arm64RuntimeTranslator, CostModelPromotesProfitableShortRegion) {
+  static const uint32_t code[] = {
+      0xd2800220,
+      0xd2800440,
+      0xd2800660,
+      0xd2800880,  // movz x0, #17/34/51/68
+      0xd2800aa0,
+      0xd2800cc0,
+      0xd2800ee0,
+      0xd2801100,  // movz x0, #85/102/119/136
+      0xd65f03c0,  // ret
+  };
+  ScopedGuestExecRegion exec_region(ToGuestAddr(code), sizeof(code));
+  auto [ok, piece, size, kind] = HeavyOptimizeAndInstallRegion(ToGuestAddr(code), true);
+  ASSERT_TRUE(ok);
+  EXPECT_EQ(kind, GuestCodeEntry::Kind::kHeavyOptimized);
+  EXPECT_EQ(size, sizeof(code));
+  ThreadState state{};
+  GuestAddr stop = ToGuestAddr(code) + sizeof(code);
+  TranslationCache::GetInstance()->InvalidateGuestRange(ToGuestAddr(code), stop + 4);
+  state.cpu.x[30] = stop;
+  state.cpu.insn_addr = ToGuestAddr(code);
+  TestingRunGeneratedCode(&state, AsHostCode(piece.code), stop);
+  EXPECT_EQ(state.cpu.x[0], 136U);
+}
+
+// A near-tie stays lite even when all instructions are supported by heavy.
+TEST_F(Arm64RuntimeTranslator, CostModelKeepsUnprofitableShortRegionLite) {
+  static const uint32_t code[] = {0x91000400, 0xd65f03c0};
+  ScopedGuestExecRegion exec_region(ToGuestAddr(code), sizeof(code));
+  auto [ok, piece, size, kind] = HeavyOptimizeAndInstallRegion(ToGuestAddr(code), true);
+  ASSERT_TRUE(ok);
+  EXPECT_EQ(kind, GuestCodeEntry::Kind::kLiteTranslated);
+  ThreadState state{};
+  GuestAddr stop = ToGuestAddr(code) + sizeof(code);
+  TranslationCache::GetInstance()->InvalidateGuestRange(ToGuestAddr(code), stop + 4);
+  state.cpu.x[0] = 16;
+  state.cpu.x[1] = 34;
+  state.cpu.x[30] = stop;
+  state.cpu.insn_addr = ToGuestAddr(code);
+  TestingRunGeneratedCode(&state, AsHostCode(piece.code), stop);
+  EXPECT_EQ(state.cpu.x[0], 17U);
+  EXPECT_EQ(state.cpu.x[1], 34U);
+}
+
+// A fully translated region with an in-region loop gears up below the length
+// threshold under either policy, and covers the whole region including the
+// code after the loop.
+TEST_F(Arm64RuntimeTranslator, HeavyOptimizeGearsUpShortLoop) {
+  static const uint32_t code[] = {
+      0x91000400,  // add x0, x0, #1
+      0xf1000421,  // subs x1, x1, #1
+      0x54ffffc1,  // b.ne -8
+      0xd65f03c0,  // ret
+  };
+  ScopedGuestExecRegion exec_region(ToGuestAddr(code), sizeof(code));
+  for (bool use_cost_model : {false, true}) {
+    SCOPED_TRACE(use_cost_model);
+    auto [ok, piece, size, kind] = HeavyOptimizeAndInstallRegion(ToGuestAddr(code), use_cost_model);
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(kind, GuestCodeEntry::Kind::kHeavyOptimized);
+    EXPECT_EQ(size, sizeof(code));
+    ThreadState state{};
+    GuestAddr stop = ToGuestAddr(code) + sizeof(code);
+    TranslationCache::GetInstance()->InvalidateGuestRange(ToGuestAddr(code), stop + 4);
+    state.cpu.x[30] = stop;
+    state.cpu.x[0] = 7;
+    state.cpu.x[1] = 100;
+    state.cpu.insn_addr = ToGuestAddr(code);
+    TestingRunGeneratedCode(&state, AsHostCode(piece.code), stop);
+    EXPECT_EQ(state.cpu.x[0], 107U);
+    EXPECT_EQ(state.cpu.x[1], 0U);
+  }
+}
+
+TEST_F(Arm64RuntimeTranslator, CostModelCanKeepLongRegionLite) {
+  uint32_t code[25];
+  for (size_t i = 0; i < 24; ++i) {
+    code[i] = 0xd503201f;  // nop
+  }
+  code[0] = 0x91000400;   // add x0, x0, #1
+  code[24] = 0xd65f03c0;  // ret
+  ScopedGuestExecRegion exec_region(ToGuestAddr(code), sizeof(code));
+  auto [ok, piece, size, kind] = HeavyOptimizeAndInstallRegion(ToGuestAddr(code), true);
+  ASSERT_TRUE(ok);
+  EXPECT_EQ(kind, GuestCodeEntry::Kind::kLiteTranslated);
+  EXPECT_EQ(size, sizeof(code));
+  ThreadState state{};
+  GuestAddr stop = ToGuestAddr(code) + sizeof(code);
+  TranslationCache::GetInstance()->InvalidateGuestRange(ToGuestAddr(code), stop + 4);
+  state.cpu.x[30] = stop;
+  state.cpu.insn_addr = ToGuestAddr(code);
+  TestingRunGeneratedCode(&state, AsHostCode(piece.code), stop);
+  EXPECT_EQ(state.cpu.x[0], 1U);
 }
 
 // Runs the installed region at `code` until it dispatches to `stop_pc`. The

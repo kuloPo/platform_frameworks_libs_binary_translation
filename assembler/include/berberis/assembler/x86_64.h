@@ -132,6 +132,7 @@ class Assembler : public x86_32_or_x86_64::Assembler<Assembler> {
   using BaseAssembler::Vmovss;
 
   void Xchgl(Register dest, Register src) {
+    auto cost_scope = TrackInsnCost(3, CodeCostFlow::kNext);
     // In 32-bit mode "xchgl %eax, %eax" did nothing and was often reused as "nop".
     //
     // On x86-64 "xchgl %eax, %eax" clears top half of %eax register, but having single-byte nop
@@ -153,6 +154,7 @@ class Assembler : public x86_32_or_x86_64::Assembler<Assembler> {
   using BaseAssembler::Call;
 
   void Call(const void* target) {
+    auto cost_scope = TrackInsnCost(20, CodeCostFlow::kUnknown);
     // There are no call instruction with properties we need thus we emulate it.
     // This is what the following code looks like when decoded with objdump (if
     // target address is 0x1234'5678'9abc'def0):
@@ -183,6 +185,7 @@ class Assembler : public x86_32_or_x86_64::Assembler<Assembler> {
     } else if (cc == Condition::kNever) {
       return;
     }
+    auto cost_scope = TrackInsnCost(3, CodeCostFlow::kConditionalExit);
     CHECK_EQ(0, static_cast<uint8_t>(cc) & 0xf0);
     // There are no Jcc instruction with properties we need thus we emulate it.
     // This is what the following code looks like when decoded with objdump (if
@@ -208,6 +211,7 @@ class Assembler : public x86_32_or_x86_64::Assembler<Assembler> {
     } else if (cc == Condition::kNever) {
       return;
     }
+    auto cost_scope = TrackInsnCost(2, CodeCostFlow::kConditionalExit);
     CHECK_EQ(static_cast<uint8_t>(cc) & 0xf0, 0);
     Emit8(0x0f);
     Emit8(0x80 | static_cast<uint8_t>(cc));
@@ -230,6 +234,7 @@ class Assembler : public x86_32_or_x86_64::Assembler<Assembler> {
       -> std::enable_if_t<std::is_integral_v<T> && sizeof(uintptr_t) < sizeof(T)> = delete;
 
   void Jmp(uintptr_t target) {
+    auto cost_scope = TrackInsnCost(3, CodeCostFlow::kExit);
     // There are no jump instruction with properties we need thus we emulate it.
     // This is what the following code looks like when decoded with objdump (if
     // target address is 0x1234'5678'9abc'def0):
@@ -247,6 +252,7 @@ class Assembler : public x86_32_or_x86_64::Assembler<Assembler> {
   // This is used to shorten jmps in the code installed in lower 2G address space.
   // Use this if the target is also within this address space.
   void Jmp32(uintptr_t target) {
+    auto cost_scope = TrackInsnCost(2, CodeCostFlow::kExit);
     Emit8(0xe9);
     Emit32(0xcccc'cccc);
     AddRelocation(pc() - 4, RelocationType::RelocAbsToDisp32, pc(), target);
@@ -530,6 +536,7 @@ constexpr inline void Assembler::EmitBaseIndexDispOperand(int base_modrm_and_sib
 }
 
 constexpr inline void Assembler::Movq(Register dest, int64_t imm64) {
+  auto cost_scope = TrackInsnCost(1, CodeCostFlow::kNext);
   if (IsInRange<uint32_t>(imm64)) {
     // Shorter encoding.
     Movl(dest, static_cast<uint32_t>(imm64));
@@ -543,6 +550,7 @@ constexpr inline void Assembler::Movq(Register dest, int64_t imm64) {
 }
 
 constexpr inline void Assembler::Vmovapd(XMMRegister arg0, XMMRegister arg1) {
+  auto cost_scope = TrackInsnCost(1);
   if (IsSwapProfitable(arg1, arg0)) {
     return EmitInstruction<0xc4, 0x01, 0x01, 0x29>(VectorRegister128Bit(arg1),
                                                    VectorRegister128Bit(arg0));
@@ -551,6 +559,7 @@ constexpr inline void Assembler::Vmovapd(XMMRegister arg0, XMMRegister arg1) {
 }
 
 constexpr inline void Assembler::Vmovapd(YMMRegister arg0, YMMRegister arg1) {
+  auto cost_scope = TrackInsnCost(1);
   if (IsSwapProfitable(arg1, arg0)) {
     return EmitInstruction<0xc4, 0x01, 0x05, 0x29>(VectorRegister256Bit(arg1),
                                                    VectorRegister256Bit(arg0));
@@ -559,6 +568,7 @@ constexpr inline void Assembler::Vmovapd(YMMRegister arg0, YMMRegister arg1) {
 }
 
 constexpr inline void Assembler::Vmovaps(XMMRegister arg0, XMMRegister arg1) {
+  auto cost_scope = TrackInsnCost(1);
   if (IsSwapProfitable(arg1, arg0)) {
     return EmitInstruction<0xc4, 0x01, 0x00, 0x29>(VectorRegister128Bit(arg1),
                                                    VectorRegister128Bit(arg0));
@@ -567,6 +577,7 @@ constexpr inline void Assembler::Vmovaps(XMMRegister arg0, XMMRegister arg1) {
 }
 
 constexpr inline void Assembler::Vmovaps(YMMRegister arg0, YMMRegister arg1) {
+  auto cost_scope = TrackInsnCost(1);
   if (IsSwapProfitable(arg1, arg0)) {
     return EmitInstruction<0xc4, 0x01, 0x04, 0x29>(VectorRegister256Bit(arg1),
                                                    VectorRegister256Bit(arg0));
@@ -575,6 +586,7 @@ constexpr inline void Assembler::Vmovaps(YMMRegister arg0, YMMRegister arg1) {
 }
 
 constexpr inline void Assembler::Vmovdqa(XMMRegister arg0, XMMRegister arg1) {
+  auto cost_scope = TrackInsnCost(1);
   if (IsSwapProfitable(arg1, arg0)) {
     return EmitInstruction<0xc4, 0x01, 0x01, 0x7f>(VectorRegister128Bit(arg1),
                                                    VectorRegister128Bit(arg0));
@@ -583,6 +595,7 @@ constexpr inline void Assembler::Vmovdqa(XMMRegister arg0, XMMRegister arg1) {
 }
 
 constexpr inline void Assembler::Vmovdqa(YMMRegister arg0, YMMRegister arg1) {
+  auto cost_scope = TrackInsnCost(1);
   if (IsSwapProfitable(arg1, arg0)) {
     return EmitInstruction<0xc4, 0x01, 0x05, 0x7f>(VectorRegister256Bit(arg1),
                                                    VectorRegister256Bit(arg0));
@@ -591,6 +604,7 @@ constexpr inline void Assembler::Vmovdqa(YMMRegister arg0, YMMRegister arg1) {
 }
 
 constexpr inline void Assembler::Vmovdqu(XMMRegister arg0, XMMRegister arg1) {
+  auto cost_scope = TrackInsnCost(1);
   if (IsSwapProfitable(arg1, arg0)) {
     return EmitInstruction<0xc4, 0x01, 0x02, 0x7f>(VectorRegister128Bit(arg1),
                                                    VectorRegister128Bit(arg0));
@@ -599,6 +613,7 @@ constexpr inline void Assembler::Vmovdqu(XMMRegister arg0, XMMRegister arg1) {
 }
 
 constexpr inline void Assembler::Vmovdqu(YMMRegister arg0, YMMRegister arg1) {
+  auto cost_scope = TrackInsnCost(1);
   if (IsSwapProfitable(arg1, arg0)) {
     return EmitInstruction<0xc4, 0x01, 0x06, 0x7f>(VectorRegister256Bit(arg1),
                                                    VectorRegister256Bit(arg0));
@@ -607,6 +622,7 @@ constexpr inline void Assembler::Vmovdqu(YMMRegister arg0, YMMRegister arg1) {
 }
 
 constexpr inline void Assembler::Vmovsd(XMMRegister arg0, XMMRegister arg1, XMMRegister arg2) {
+  auto cost_scope = TrackInsnCost(1);
   if (IsSwapProfitable(arg2, arg0)) {
     return EmitInstruction<0xc4, 0x01, 0x03, 0x11>(
         VectorRegister128Bit(arg2), VectorRegister128Bit(arg0), VectorRegister128Bit(arg1));
@@ -616,6 +632,7 @@ constexpr inline void Assembler::Vmovsd(XMMRegister arg0, XMMRegister arg1, XMMR
 }
 
 constexpr inline void Assembler::Vmovss(XMMRegister arg0, XMMRegister arg1, XMMRegister arg2) {
+  auto cost_scope = TrackInsnCost(1);
   if (IsSwapProfitable(arg2, arg0)) {
     return EmitInstruction<0xc4, 0x01, 0x02, 0x11>(
         VectorRegister128Bit(arg2), VectorRegister128Bit(arg0), VectorRegister128Bit(arg1));
@@ -625,6 +642,7 @@ constexpr inline void Assembler::Vmovss(XMMRegister arg0, XMMRegister arg1, XMMR
 }
 
 constexpr inline void Assembler::Xchgq(Register dest, Register src) {
+  auto cost_scope = TrackInsnCost(3, CodeCostFlow::kNext);
   // We compare output to that from clang and thus want to produce the same code.
   // 0x48 0x90 is suboptimal encoding for that operation (pure 0x90 does the same
   // and this is what gcc + gas are producing), but this is what clang <= 8 does.

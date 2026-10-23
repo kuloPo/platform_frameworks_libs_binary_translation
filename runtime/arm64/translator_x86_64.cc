@@ -16,6 +16,7 @@
 
 #include "translator.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -209,12 +210,37 @@ size_t GetGearUpMinInsns() {
   return value;
 }
 
-// Optimizing (second-gear) translation install. The heavy optimizer translates
-// the region; if it bails on an instruction it does not yet handle, this returns
-// {false, ...} and the caller re-lite-translates the whole region.
+// Aggregate diagnostics only; updates happen during compilation, never in JIT code.
+struct GearUpCostStats {
+  std::atomic<uint64_t> attempts{0};
+  std::atomic<uint64_t> comparable{0};
+  std::atomic<uint64_t> selected_heavy{0};
+  std::atomic<uint64_t> selected_lite{0};
+  std::atomic<uint64_t> promoted_short{0};
+  std::atomic<uint64_t> declined_long{0};
+};
+// Keep debugger-readable counters in production builds where TRACE is disabled.
+[[gnu::used, gnu::retain]] GearUpCostStats g_gearup_cost_stats;
+
+bool UseGearUpCostModel() {
+  static const bool enabled = []() {
+    static ConfigStr config("BERBERIS_GEARUP_POLICY", "berberis.gearup_policy");
+    // Unset or empty selects cost; use "legacy" for length-based selection.
+    const char* policy = config.get();
+    return !policy || !*policy || strcmp(policy, "cost") == 0;
+  }();
+  return enabled;
+}
+
+// Build and install a hot region. Prefer heavy for captured in-region loops.
+// Otherwise the cost policy can install a settled lite candidate directly.
+// Unscorable regions use the guest-length policy; a declined heavy candidate
+// without reusable lite code returns failure so the caller can generate settled
+// lite code.
 std::tuple<bool, HostCodePiece, size_t, GuestCodeEntry::Kind> HeavyOptimizeAndInstallRegion(
-    GuestAddr pc) {
-  MachineCode machine_code;
+    GuestAddr pc,
+    bool use_cost_model) {
+  MachineCode machine_code(use_cost_model);
   bool has_in_region_backedge = false;
   auto [stop_pc, success, number_of_instructions] = HeavyOptimizeRegion(
       pc, &machine_code, {.end_pc = pc + GetExecutableRegionSize(pc)}, &has_in_region_backedge);
@@ -240,16 +266,70 @@ std::tuple<bool, HostCodePiece, size_t, GuestCodeEntry::Kind> HeavyOptimizeAndIn
     }
     return {false, {}, 0, {}};
   }
-  // Decline gear-up for fully-translated regions too small for the heavy
-  // optimizer to help. The size threshold (not the back-edge signal) governs the
-  // full-success path on purpose: a small loop the heavy tier translates in full
-  // is not automatically a win — e.g. a tight data-dependent CSEL loop is *slower*
-  // heavy than lite, so keep it lite. The back-edge signal only rescues a region
-  // that BAILED (above): there the alternative is re-liting and losing an
-  // already-captured in-region loop. The caller re-lite-translates a declined
-  // gear-up without self-profiling, so the region settles on the lite tier
-  // permanently instead of re-attempting gear-up every threshold.
-  if (number_of_instructions < GetGearUpMinInsns()) {
+  // Select heavy directly for captured loops. Lite commonly ends at the back-edge
+  // while heavy continues, making candidates cover different guest ranges.
+  // Skip the cost comparison and its candidate lite translation.
+  if (use_cost_model && !has_in_region_backedge) {
+    g_gearup_cost_stats.attempts.fetch_add(1, std::memory_order_relaxed);
+    auto heavy_cost = AnalyzeCodeCost(machine_code);
+    if (heavy_cost.valid) {
+      MachineCode lite_code(true);
+      LiteTranslateParams params;
+      params.end_pc = pc + GetExecutableRegionSize(pc);
+      params.allow_in_region_loops = true;
+      auto [lite_success, lite_stop] = TryLiteTranslateRegion(pc, &lite_code, params);
+      auto lite_cost = AnalyzeCodeCost(lite_code);
+      // Do not compare a truncated or differently bounded guest region.
+      if (lite_success && lite_stop == stop_pc && lite_cost.valid &&
+          heavy_cost.backedges == lite_cost.backedges) {
+        bool prefer_heavy = PreferHeavyCode(heavy_cost, lite_cost);
+        g_gearup_cost_stats.comparable.fetch_add(1, std::memory_order_relaxed);
+        auto& selected =
+            prefer_heavy ? g_gearup_cost_stats.selected_heavy : g_gearup_cost_stats.selected_lite;
+        selected.fetch_add(1, std::memory_order_relaxed);
+        if (prefer_heavy && number_of_instructions < GetGearUpMinInsns()) {
+          g_gearup_cost_stats.promoted_short.fetch_add(1, std::memory_order_relaxed);
+        } else if (!prefer_heavy && number_of_instructions >= GetGearUpMinInsns()) {
+          g_gearup_cost_stats.declined_long.fetch_add(1, std::memory_order_relaxed);
+        }
+        TRACE("Gear-up cost pc=0x%lx heavy=%lu lite=%lu heavy_loop=%lu lite_loop=%lu tier=%s",
+              pc,
+              heavy_cost.score,
+              lite_cost.score,
+              heavy_cost.loop_score,
+              lite_cost.loop_score,
+              prefer_heavy ? "heavy" : "lite");
+        TRACE("Gear-up cost totals attempts=%lu comparable=%lu heavy=%lu lite=%lu short=%lu long=%lu",
+              g_gearup_cost_stats.attempts.load(std::memory_order_relaxed),
+              g_gearup_cost_stats.comparable.load(std::memory_order_relaxed),
+              g_gearup_cost_stats.selected_heavy.load(std::memory_order_relaxed),
+              g_gearup_cost_stats.selected_lite.load(std::memory_order_relaxed),
+              g_gearup_cost_stats.promoted_short.load(std::memory_order_relaxed),
+              g_gearup_cost_stats.declined_long.load(std::memory_order_relaxed));
+        auto* chosen = prefer_heavy ? &machine_code : &lite_code;
+        auto piece = InstallTranslated(chosen, pc, size, prefer_heavy ? "heavy" : "lite");
+        if (piece.code == kNullHostCodeAddr) {
+          return {false, {}, 0, {}};
+        }
+        return {true, piece, size, prefer_heavy ? kHeavyOptimized : kLiteTranslated};
+      }
+      // The legacy decision would settle on lite. Reuse a complete candidate
+      // even if its natural boundary differs, instead of translating it again.
+      if (lite_success && number_of_instructions < GetGearUpMinInsns()) {
+        size_t lite_size = lite_stop - pc;
+        auto piece = InstallTranslated(&lite_code, pc, lite_size, "lite");
+        if (piece.code == kNullHostCodeAddr) {
+          return {false, {}, 0, {}};
+        }
+        return {true, piece, lite_size, kLiteTranslated};
+      }
+    }
+  }
+  // Apply the length fallback only to regions without a captured loop. Loop
+  // regions retain the heavy translation, including code after the back-edge.
+  // The caller re-lite-translates declined regions without self-profiling, so
+  // they settle on the lite tier instead of retrying gear-up at each threshold.
+  if (number_of_instructions < GetGearUpMinInsns() && !has_in_region_backedge) {
     return {false, {}, 0, {}};
   }
   // region digitalis
@@ -259,6 +339,11 @@ std::tuple<bool, HostCodePiece, size_t, GuestCodeEntry::Kind> HeavyOptimizeAndIn
   }
   return {true, heavy_piece2, size, kHeavyOptimized};
   // endregion
+}
+
+std::tuple<bool, HostCodePiece, size_t, GuestCodeEntry::Kind> HeavyOptimizeAndInstallRegion(
+    GuestAddr pc) {
+  return HeavyOptimizeAndInstallRegion(pc, UseGearUpCostModel());
 }
 
 template <TranslationGear kGear = TranslationGear::kFirst>

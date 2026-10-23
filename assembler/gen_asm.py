@@ -528,6 +528,30 @@ _ARGUMENT_FORMATS_TO_SIZES = {
 #
 # Note: on x86-32 that mode can also be emulated using regular instruction form, if needed.
 def _gen_emit_instruction(f, insn, arch, rip_operand=False, dyn_rm=False):
+  if 'x86' in arch:
+    # Relative work units, shared by both tiers after all lowering. These are
+    # deliberately not advertised as CPU-specific latency or micro-op counts.
+    name = insn['asm'].lower()
+    weight = 1
+    if 'mul' in name:
+      weight = 3
+    if 'div' in name or 'sqrt' in name:
+      weight = 16
+    if 'lock' in name or 'cmpxchg' in name or 'fence' in name:
+      weight = 32
+    if not name.startswith(('lea', 'prefetch')):
+      for arg in insn['args']:
+        if asm_defs.is_mem_op(arg['class']):
+          weight += 4 if arg.get('usage') == 'use_def' else 2
+    flow = 'kNext'
+    if name.startswith(('call', 'rep', 'loop')):
+      flow = 'kUnknown'
+    elif name.startswith(('jmp', 'ret')):
+      flow = 'kExit'
+      weight += 1
+    elif name.startswith(('push', 'pop')):
+      weight += 2
+    print('  auto cost_scope = TrackInsnCost(%d, CodeCostFlow::%s);' % (weight, flow), file=f)
   result = []
   arg_count = 0
   for arg in insn['args']:
