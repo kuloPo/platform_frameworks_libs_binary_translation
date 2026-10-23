@@ -144,6 +144,12 @@ class LiteTranslator {
     return result;
   }
 
+  [[nodiscard]] Register Copy32(Register value) {
+    Register result = AllocTempReg();
+    as_.Movl(result, value);
+    return result;
+  }
+
   void StoreMappedRegs() { StoreMappedRegs(ModifiedMappedRegs()); }
 
   //

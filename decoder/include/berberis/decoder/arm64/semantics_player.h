@@ -265,6 +265,16 @@ class SemanticsPlayer {
   }
 
   void LogicalShiftedReg(const typename Decoder::LogicalShiftedRegArgs& args) {
+    // MOV is ORR with ZR and an unshifted, non-inverted source. A W write
+    // must still clear the upper half, even when source and destination alias;
+    // a zero source has no upper half to clear.
+    if (args.opcode == Decoder::LogicalShiftedRegOpcode::kOrr && args.src1 == 31 && !args.invert &&
+        args.shift_amount == 0) {
+      Register src = GetRegOrZero(args.src2);
+      bool needs_zero_extend = !args.is_64bit && args.src2 != 31;
+      SetRegOrIgnore(args.dst, needs_zero_extend ? listener_->Copy32(src) : src);
+      return;
+    }
     Register src1 = GetRegOrZero(args.src1);
     Register src2 = GetRegOrZero(args.src2);
     Register result = listener_->LogicalShiftedReg(args.opcode, args.is_64bit, args.invert,

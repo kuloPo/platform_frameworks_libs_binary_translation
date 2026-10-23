@@ -9645,6 +9645,8 @@ class Interpreter {
 
   [[nodiscard]] Register Copy(Register value) const { return value; }
 
+  [[nodiscard]] Register Copy32(Register value) const { return static_cast<uint32_t>(value); }
+
   [[nodiscard]] GuestAddr GetInsnAddr() const { return state_->cpu.insn_addr; }
 
   void FinalizeInsn(uint8_t insn_len) {

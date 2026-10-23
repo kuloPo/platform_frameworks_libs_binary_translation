@@ -5656,6 +5656,35 @@ TEST_F(Arm64LiteTranslateRegionTest, AndShiftedReg_Lsr) {
   EXPECT_EQ(state_.cpu.x[3], 16ULL);
 }
 
+TEST_F(Arm64LiteTranslateRegionTest, MovAliasPreservesSourceFlagsAndZeroExtends) {
+  static const uint32_t code[] = {
+      0xaa0103e0,  // MOV X0, X1.
+      0x2a0103e2,  // MOV W2, W1.
+      0x2a0303e3,  // MOV W3, W3.
+      0xaa1f03e4,  // MOV X4, XZR.
+      0x2a1f03e5,  // MOV W5, WZR.
+      0xaa0103ff,  // MOV XZR, X1.
+  };
+  for (uint64_t value : {uint64_t{0}, uint64_t{0xffff000080000001ULL}, ~uint64_t{0}}) {
+    state_.cpu.x[1] = value;
+    state_.cpu.x[3] = value;
+    state_.cpu.x[4] = ~uint64_t{0};
+    state_.cpu.x[5] = ~uint64_t{0};
+    state_.cpu.flags = 0xc101;
+    const auto sp = state_.cpu.sp;
+    GuestAddr end_pc = ToGuestAddr(code) + sizeof(code);
+    ASSERT_TRUE(Run(code, end_pc));
+    EXPECT_EQ(state_.cpu.x[0], value);
+    EXPECT_EQ(state_.cpu.x[1], value);
+    EXPECT_EQ(state_.cpu.x[2], static_cast<uint32_t>(value));
+    EXPECT_EQ(state_.cpu.x[3], static_cast<uint32_t>(value));
+    EXPECT_EQ(state_.cpu.x[4], uint64_t{0});
+    EXPECT_EQ(state_.cpu.x[5], uint64_t{0});
+    EXPECT_EQ(state_.cpu.flags, 0xc101);
+    EXPECT_EQ(state_.cpu.sp, sp);
+  }
+}
+
 TEST_F(Arm64LiteTranslateRegionTest, SubShiftedReg_Lsl) {
   // SUB X5, X4, X3, LSL #2: x5 = x4 - (x3 << 2)
   static const uint32_t code[] = {

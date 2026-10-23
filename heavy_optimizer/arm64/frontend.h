@@ -176,6 +176,15 @@ class HeavyOptimizerFrontend {
   // A caller whose 32-bit op is conditional keeps an explicit MOVL.
   [[nodiscard]] Register CopyForWrite32(Register value) { return Copy(value); }
 
+  // A W-register copy with no 32-bit op to zero-extend it: an explicit MOVL,
+  // which the allocator cannot coalesce away.
+  [[nodiscard]] Register Copy32(Register value) {
+    if (!success()) {
+      return AllocTempReg();
+    }
+    return std::get<0>(Gen<x86_64::MovlRegReg>(value));
+  }
+
   [[nodiscard]] bool success() const { return success_; }
 
   void Undefined(BailReason reason = BailReason::kUnimplemented);
