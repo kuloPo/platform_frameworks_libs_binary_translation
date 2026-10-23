@@ -4260,6 +4260,82 @@ TEST_F(Arm64HeavyOptimizerFrontendTest, MovAliasPreservesSourceFlagsAndZeroExten
 // Load/store pair (LDP / STP).
 //
 
+TEST_F(Arm64HeavyOptimizerFrontendTest, TaggedAcquireReleaseAllWidths) {
+  for (uint32_t size = 0; size < 4; ++size) {
+    for (bool zero_source : {false, true}) {
+      SCOPED_TRACE(size);
+      SCOPED_TRACE(zero_source);
+      uint64_t cell = 0xfedcba9876543210ULL;
+      const uint64_t original = cell;
+      const uint64_t value = 0x8123456789abcdefULL;
+      const uint64_t mask = ~uint64_t{0} >> (64 - (8 << size));
+      const uint32_t source = zero_source ? 31 : 1;
+      const uint32_t code[] = {
+          (size << 30) | 0x089ffc00u | source,  // STLR source, [X0].
+          (size << 30) | 0x08dffc00u,           // LDAR X0/W0, [X0].
+      };
+      state_.cpu.x[0] = ToGuestAddr(&cell) | 0xab00000000000000ULL;
+      state_.cpu.x[1] = value;
+      state_.cpu.flags = 0xc101;
+      const GuestAddr end_pc = ToGuestAddr(code) + sizeof(code);
+      bool ok = false;
+      EXPECT_EQ(RunRegion(&state_, code, end_pc, &ok), end_pc);
+      ASSERT_TRUE(ok);
+      const uint64_t expected = zero_source ? 0 : value & mask;
+      EXPECT_EQ(cell, (original & ~mask) | expected);
+      EXPECT_EQ(state_.cpu.x[0], expected);
+      EXPECT_EQ(state_.cpu.x[1], value);
+      EXPECT_EQ(state_.cpu.flags, 0xc101);
+    }
+  }
+}
+
+TEST_F(Arm64HeavyOptimizerFrontendTest, TaggedExclusiveReservationAllWidths) {
+  for (uint32_t size = 0; size < 4; ++size) {
+    for (bool acquire_release : {false, true}) {
+      for (bool changed : {false, true}) {
+        SCOPED_TRACE(size);
+        SCOPED_TRACE(acquire_release);
+        SCOPED_TRACE(changed);
+        uint64_t cell = 0xfedcba9876543281ULL;
+        const uint64_t original = cell;
+        const uint64_t value = 0x8123456789abcdefULL;
+        const uint64_t mask = ~uint64_t{0} >> (64 - (8 << size));
+        const uint32_t order = acquire_release ? 0x8000u : 0;
+        uint32_t code[] = {(size << 30) | 0x085f7c01u | order};  // LDXR X1, [X0].
+        state_.cpu.x[0] = ToGuestAddr(&cell) | 0xab00000000000000ULL;
+        state_.cpu.x[2] = value;
+        state_.cpu.flags = 0xc101;
+        {
+          const GuestAddr end_pc = ToGuestAddr(code) + sizeof(code);
+          bool ok = false;
+          EXPECT_EQ(RunRegion(&state_, code, end_pc, &ok), end_pc);
+          ASSERT_TRUE(ok);
+        }
+        EXPECT_EQ(state_.cpu.x[1], original & mask);
+        EXPECT_EQ(state_.cpu.reservation_address, ToGuestAddr(&cell));
+        EXPECT_EQ(static_cast<uint64_t>(state_.cpu.reservation_value), original & mask);
+        if (changed) {
+          cell ^= 1;
+        }
+        // A different tag still refers to the same exclusive reservation.
+        state_.cpu.x[0] = ToGuestAddr(&cell) | 0xcd00000000000000ULL;
+        code[0] = (size << 30) | 0x08037c02u | order;  // STXR W3, X2, [X0].
+        {
+          const GuestAddr end_pc = ToGuestAddr(code) + sizeof(code);
+          bool ok = false;
+          EXPECT_EQ(RunRegion(&state_, code, end_pc, &ok), end_pc);
+          ASSERT_TRUE(ok);
+        }
+        EXPECT_EQ(state_.cpu.x[3], changed ? 1u : 0u);
+        EXPECT_EQ(cell, changed ? original ^ 1 : (original & ~mask) | (value & mask));
+        EXPECT_EQ(state_.cpu.reservation_address, GuestAddr{0});
+        EXPECT_EQ(state_.cpu.flags, 0xc101);
+      }
+    }
+  }
+}
+
 TEST_F(Arm64HeavyOptimizerFrontendTest, PairKeepsRecoveryForEachMemoryAccess) {
   // STP/LDP X, STP/LDP W, and LDPSW, all based at X2.
   for (uint32_t insn : {0xa9000440u, 0xa9400440u, 0x29000440u, 0x29400440u, 0x69400440u}) {

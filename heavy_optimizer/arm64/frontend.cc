@@ -1833,7 +1833,7 @@ void HeavyOptimizerFrontend::LoadStoreExclusive(const Decoder::LoadStoreExclusiv
   switch (args.op) {
     case Decoder::AtomicOp::kLdar: {
       // Load-acquire: x86-TSO provides acquire ordering for all loads.
-      Register res = Load(lss, /*is_signed=*/false, /*is_64bit_target=*/true, base, 0);
+      Register res = LoadUntagged(lss, /*is_signed=*/false, /*is_64bit_target=*/true, base, 0);
       if (!success()) {
         return;
       }
@@ -1851,14 +1851,14 @@ void HeavyOptimizerFrontend::LoadStoreExclusive(const Decoder::LoadStoreExclusiv
       if (!success()) {
         return;
       }
-      Store(lss, base, 0, data);
+      StoreUntagged(lss, base, 0, data);
       builder_.Gen<x86_64::Mfence>();
       return;
     }
 
     case Decoder::AtomicOp::kLdxr: {
       // Load-exclusive: load the value, then record the reservation.
-      Register res = Load(lss, /*is_signed=*/false, /*is_64bit_target=*/true, base, 0);
+      Register res = LoadUntagged(lss, /*is_signed=*/false, /*is_64bit_target=*/true, base, 0);
       if (!success()) {
         return;
       }

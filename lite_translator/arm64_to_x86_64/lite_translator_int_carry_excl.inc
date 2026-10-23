@@ -276,7 +276,7 @@
     switch (args.op) {
       case Decoder::AtomicOp::kLdar: {
         // Load-acquire: x86 TSO provides acquire semantics for all loads.
-        Register res = Load(lss, /*is_signed=*/false, /*is_64bit_target=*/true, base, 0);
+        Register res = LoadUntagged(lss, /*is_signed=*/false, /*is_64bit_target=*/true, base, 0);
         if (!success()) return;
         if (args.rt < 31) SetReg(args.rt, res);
         break;
@@ -291,7 +291,7 @@
         Register data = (args.rt < 31) ? GetReg(args.rt) : AllocTempReg();
         if (!success()) return;
         if (args.rt >= 31) as_.Xorl(data, data);
-        Store(lss, base, 0, data);
+        StoreUntagged(lss, base, 0, data);
         as_.Mfence();
         break;
       }
@@ -427,7 +427,7 @@
 
       case Decoder::AtomicOp::kLdxr: {
         // Load-exclusive: load value and set reservation in ThreadState.
-        Register res = Load(lss, /*is_signed=*/false, /*is_64bit_target=*/true, base, 0);
+        Register res = LoadUntagged(lss, /*is_signed=*/false, /*is_64bit_target=*/true, base, 0);
         if (!success()) return;
 
         // Store reservation address.
@@ -536,9 +536,9 @@
           as_.Notq(clr_mask);
         }
 
-        // Initial fetch of [mem] into RAX (Load() emits fault recovery).
-        Register init = Load(lss, /*is_signed=*/false, /*is_64bit_target=*/true,
-                             base, 0);
+        // Initial fetch of [mem] into RAX (LoadUntagged() emits fault recovery).
+        Register init =
+            LoadUntagged(lss, /*is_signed=*/false, /*is_64bit_target=*/true, base, 0);
         if (!success()) return;
         as_.Movq(Assembler::rax, init);
 
@@ -580,7 +580,7 @@
 
         // Old value is in RAX. For byte/halfword sizes the failure path of
         // CMPXCHG only refreshes AL/AX; upper bits are whatever the initial
-        // Movzxbl/Movzxwl in Load() set them to (zero), so they're already
+        // Movzxbl/Movzxwl in LoadUntagged() set them to (zero), so they're already
         // clean. Still mask explicitly to match the existing kLdadd/kSwp
         // pattern for byte/halfword zero-extension to 64 bits.
         if (args.rt < 31) {
@@ -615,9 +615,9 @@
         if (!success()) return;
         if (args.rs >= 31) as_.Xorl(operand, operand);
 
-        // Initial fetch of [mem] into RAX (Load emits fault recovery).
-        Register init = Load(lss, /*is_signed=*/false,
-                             /*is_64bit_target=*/true, base, 0);
+        // Initial fetch of [mem] into RAX (LoadUntagged emits fault recovery).
+        Register init =
+            LoadUntagged(lss, /*is_signed=*/false, /*is_64bit_target=*/true, base, 0);
         if (!success()) return;
         as_.Movq(Assembler::rax, init);
 

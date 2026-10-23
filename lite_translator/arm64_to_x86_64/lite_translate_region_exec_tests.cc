@@ -382,7 +382,7 @@ class Arm64LiteTranslateRegionTest : public ::testing::Test {
   }
 
   template <typename T>
-  bool Run(T& code, GuestAddr expected_stop_addr) {
+  bool Run(T& code, GuestAddr expected_stop_addr, bool enable_reg_mapping = true) {
     Reset(code);
     GuestAddr code_end = ToGuestAddr(bit_cast<char*>(&code[0]) + sizeof(code));
     MachineCode machine_code;
@@ -391,6 +391,7 @@ class Arm64LiteTranslateRegionTest : public ::testing::Test {
                                                      LiteTranslateParams{
                                                          .end_pc = code_end,
                                                          .allow_dispatch = false,
+                                                         .enable_reg_mapping = enable_reg_mapping,
                                                      });
 
     if (!success || (stop_pc > code_end)) {
@@ -6644,6 +6645,79 @@ constexpr uint32_t LdpX(uint8_t rt1, uint8_t rt2, uint8_t rn, int8_t imm7) {
   return 0xA9400000 | (imm << 15) | (rt2 << 10) | (rn << 5) | rt1;
 }
 
+TEST_F(Arm64LiteTranslateRegionTest, TaggedAcquireReleaseAllWidths) {
+  for (bool enable_reg_mapping : {false, true}) {
+    SCOPED_TRACE(enable_reg_mapping);
+    for (uint32_t size = 0; size < 4; ++size) {
+      for (bool zero_source : {false, true}) {
+        SCOPED_TRACE(size);
+        SCOPED_TRACE(zero_source);
+        uint64_t cell = 0xfedcba9876543210ULL;
+        const uint64_t original = cell;
+        const uint64_t value = 0x8123456789abcdefULL;
+        const uint64_t mask = ~uint64_t{0} >> (64 - (8 << size));
+        const uint32_t source = zero_source ? 31 : 1;
+        const uint32_t code[] = {
+            (size << 30) | 0x089ffc00u | source,  // STLR source, [X0].
+            (size << 30) | 0x08dffc00u,           // LDAR X0/W0, [X0].
+        };
+        state_.cpu.x[0] = ToGuestAddr(&cell) | 0xab00000000000000ULL;
+        state_.cpu.x[1] = value;
+        state_.cpu.flags = 0xc101;
+        ASSERT_TRUE(Run(code, ToGuestAddr(code) + sizeof(code), enable_reg_mapping));
+        const uint64_t expected = zero_source ? 0 : value & mask;
+        EXPECT_EQ(cell, (original & ~mask) | expected);
+        EXPECT_EQ(state_.cpu.x[0], expected);
+        EXPECT_EQ(state_.cpu.x[1], value);
+        EXPECT_EQ(state_.cpu.flags, 0xc101);
+      }
+    }
+  }
+}
+
+TEST_F(Arm64LiteTranslateRegionTest, TaggedExclusiveReservationAllWidths) {
+  for (bool enable_reg_mapping : {false, true}) {
+    SCOPED_TRACE(enable_reg_mapping);
+    for (uint32_t size = 0; size < 4; ++size) {
+      for (bool acquire_release : {false, true}) {
+        for (bool changed : {false, true}) {
+          SCOPED_TRACE(size);
+          SCOPED_TRACE(acquire_release);
+          SCOPED_TRACE(changed);
+          uint64_t cell = 0xfedcba9876543281ULL;
+          const uint64_t original = cell;
+          const uint64_t value = 0x8123456789abcdefULL;
+          const uint64_t mask = ~uint64_t{0} >> (64 - (8 << size));
+          const uint32_t order = acquire_release ? 0x8000u : 0;
+          uint32_t code[] = {(size << 30) | 0x085f7c01u | order};  // LDXR X1, [X0].
+          state_.cpu.x[0] = ToGuestAddr(&cell) | 0xab00000000000000ULL;
+          state_.cpu.x[2] = value;
+          state_.cpu.flags = 0xc101;
+          {
+            ASSERT_TRUE(Run(code, ToGuestAddr(code) + sizeof(code), enable_reg_mapping));
+          }
+          EXPECT_EQ(state_.cpu.x[1], original & mask);
+          EXPECT_EQ(state_.cpu.reservation_address, ToGuestAddr(&cell));
+          EXPECT_EQ(static_cast<uint64_t>(state_.cpu.reservation_value), original & mask);
+          if (changed) {
+            cell ^= 1;
+          }
+          // A different tag still refers to the same exclusive reservation.
+          state_.cpu.x[0] = ToGuestAddr(&cell) | 0xcd00000000000000ULL;
+          code[0] = (size << 30) | 0x08037c02u | order;  // STXR W3, X2, [X0].
+          {
+            ASSERT_TRUE(Run(code, ToGuestAddr(code) + sizeof(code), enable_reg_mapping));
+          }
+          EXPECT_EQ(state_.cpu.x[3], changed ? 1u : 0u);
+          EXPECT_EQ(cell, changed ? original ^ 1 : (original & ~mask) | (value & mask));
+          EXPECT_EQ(state_.cpu.reservation_address, GuestAddr{0});
+          EXPECT_EQ(state_.cpu.flags, 0xc101);
+        }
+      }
+    }
+  }
+}
+
 TEST_F(Arm64LiteTranslateRegionTest, PairKeepsRecoveryForEachMemoryAccess) {
   // STP/LDP X, STP/LDP W, and LDPSW, all based at X2.
   for (uint32_t insn : {0xa9000440u, 0xa9400440u, 0x29000440u, 0x29400440u, 0x69400440u}) {
@@ -7242,6 +7316,56 @@ TEST_F(Arm64LiteTranslateRegionTest, LdclrClearsBitsX) {
   EXPECT_TRUE(Run(code, ToGuestAddr(code) + sizeof(code)));
   EXPECT_EQ(target, 0xF0F0F0F0'F0F0F0F0ULL);
   EXPECT_EQ(state_.cpu.x[1], 0xFFFFFFFF'FFFFFFFFULL);
+}
+
+TEST_F(Arm64LiteTranslateRegionTest, TaggedAtomicRetryLoopsUnderRegisterPressure) {
+  for (bool enable_reg_mapping : {false, true}) {
+    SCOPED_TRACE(enable_reg_mapping);
+    for (uint32_t size = 0; size < 4; ++size) {
+      for (uint32_t op = 1; op <= 7; ++op) {
+        for (uint32_t rt : {0u, 1u, 2u}) {
+          for (bool invert : {false, true}) {
+            SCOPED_TRACE(size);
+            SCOPED_TRACE(op);
+            SCOPED_TRACE(rt);
+            SCOPED_TRACE(invert);
+            const uint64_t initial = invert ? 0x812345670000007fULL : 0xfedcba9880000081ULL;
+            const uint64_t operand = invert ? 0xfedcba9880000081ULL : 0x812345670000007fULL;
+            uint64_t cell = initial;
+            uint32_t code[8];
+            // Occupy all seven permanent GP mappings before the atomic operation.
+            for (uint32_t reg = 0; reg < 7; ++reg) {
+              code[reg] = 0xaa0003e0u | (reg << 16) | reg;  // MOV Xn, Xn.
+              state_.cpu.x[reg] = 0x1234000000000000ULL + reg;
+            }
+            const uint64_t address = ToGuestAddr(&cell) | 0xab00000000000000ULL;
+            state_.cpu.x[0] = address;
+            state_.cpu.x[1] = operand;
+            state_.cpu.flags = 0xc101;
+            // LDCLR/LDEOR/LDSET/LDSMAX/LDSMIN/LDUMAX/LDUMIN X1, Xt, [X0].
+            code[7] = (size << 30) | 0x38210000u | (op << 12) | rt;
+            ASSERT_TRUE(Run(code, ToGuestAddr(code) + sizeof(code), enable_reg_mapping));
+            const uint64_t jit_cell = cell;
+            uint64_t jit_regs[7];
+            for (uint32_t reg = 0; reg < 7; ++reg) {
+              jit_regs[reg] = state_.cpu.x[reg];
+              state_.cpu.x[reg] = 0x1234000000000000ULL + reg;
+            }
+            EXPECT_EQ(state_.cpu.flags, 0xc101);
+            cell = initial;
+            state_.cpu.x[0] = address;
+            state_.cpu.x[1] = operand;
+            Interpret(code[7]);
+            EXPECT_EQ(jit_cell, cell);
+            for (uint32_t reg = 0; reg < 7; ++reg) {
+              EXPECT_EQ(jit_regs[reg], state_.cpu.x[reg]) << "reg=" << reg;
+            }
+            EXPECT_EQ(state_.cpu.flags, 0xc101);
+          }
+        }
+      }
+    }
+  }
 }
 
 // Atomic differential fuzzer: drive every LSE atomic through the JIT and the
