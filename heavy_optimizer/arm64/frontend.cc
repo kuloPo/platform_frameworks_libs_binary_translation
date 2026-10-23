@@ -3294,7 +3294,17 @@ Register HeavyOptimizerFrontend::Load(Decoder::LoadStoreSize size,
   if (!success()) {
     return AllocTempReg();
   }
-  Register masked = ApplyTbi(base);
+  return LoadUntagged(size, is_signed, is_64bit_target, ApplyTbi(base), offset);
+}
+
+Register HeavyOptimizerFrontend::LoadUntagged(Decoder::LoadStoreSize size,
+                                              bool is_signed,
+                                              bool is_64bit_target,
+                                              Register masked,
+                                              int32_t offset) {
+  if (!success()) {
+    return AllocTempReg();
+  }
   Register res;
   switch (size) {
     case Decoder::LoadStoreSize::k64bit:
@@ -3346,7 +3356,16 @@ void HeavyOptimizerFrontend::Store(Decoder::LoadStoreSize size, Register base, i
   if (!success()) {
     return;
   }
-  Register masked = ApplyTbi(base);
+  StoreUntagged(size, ApplyTbi(base), offset, data);
+}
+
+void HeavyOptimizerFrontend::StoreUntagged(Decoder::LoadStoreSize size,
+                                           Register masked,
+                                           int32_t offset,
+                                           Register data) {
+  if (!success()) {
+    return;
+  }
   switch (size) {
     case Decoder::LoadStoreSize::k64bit:
       Gen<x86_64::MovqOpReg>({.base = masked, .disp = offset}, data);
@@ -3402,11 +3421,13 @@ void HeavyOptimizerFrontend::LoadPair(Decoder::LoadStoreSize size,
   }
   UNUSED_ARGS(offset);  // Already applied by the SemanticsPlayer.
   bool is_64bit_target = (size == Decoder::LoadStoreSize::k64bit) || is_signed;
-  Register val1 = Load(size, is_signed, is_64bit_target, base, 0);
+  Register masked = ApplyTbi(base);
+  Register val1 = LoadUntagged(size, is_signed, is_64bit_target, masked, 0);
   if (!success()) {
     return;
   }
-  Register val2 = Load(size, is_signed, is_64bit_target, base, static_cast<int32_t>(scale));
+  Register val2 =
+      LoadUntagged(size, is_signed, is_64bit_target, masked, static_cast<int32_t>(scale));
   if (!success()) {
     return;
   }
@@ -3431,11 +3452,12 @@ void HeavyOptimizerFrontend::StorePair(Decoder::LoadStoreSize size,
     return;
   }
   UNUSED_ARGS(offset);  // Already applied by the SemanticsPlayer.
-  Store(size, base, 0, data1);
+  Register masked = ApplyTbi(base);
+  StoreUntagged(size, masked, 0, data1);
   if (!success()) {
     return;
   }
-  Store(size, base, static_cast<int32_t>(scale), data2);
+  StoreUntagged(size, masked, static_cast<int32_t>(scale), data2);
 }
 
 // LDR (register offset): address = base + extend(offset_reg) << shift_amount,

@@ -494,13 +494,19 @@
 
   Register Load(Decoder::LoadStoreSize size, bool is_signed, bool is_64bit_target,
                 Register base, int32_t offset) {
-    // apply TBI mask before using base as memory operand.
-    base = ApplyTbi(base);
+    return LoadUntagged(size, is_signed, is_64bit_target, ApplyTbi(base), offset);
+  }
+
+  Register LoadUntagged(Decoder::LoadStoreSize size,
+                        bool is_signed,
+                        bool is_64bit_target,
+                        Register masked,
+                        int32_t offset) {
     AssemblerBase::Label* recovery_label = as_.MakeLabel();
     as_.SetRecoveryPoint(recovery_label);
 
     Register res = AllocTempReg();
-    Assembler::Operand mem{.base = base, .disp = offset};
+    Assembler::Operand mem{.base = masked, .disp = offset};
     switch (size) {
       case Decoder::LoadStoreSize::k64bit:
         as_.Movq(res, mem);
@@ -543,12 +549,14 @@
   }
 
   void Store(Decoder::LoadStoreSize size, Register base, int32_t offset, Register data) {
-    // apply TBI mask before using base as memory operand.
-    base = ApplyTbi(base);
+    StoreUntagged(size, ApplyTbi(base), offset, data);
+  }
+
+  void StoreUntagged(Decoder::LoadStoreSize size, Register masked, int32_t offset, Register data) {
     AssemblerBase::Label* recovery_label = as_.MakeLabel();
     as_.SetRecoveryPoint(recovery_label);
 
-    Assembler::Operand mem{.base = base, .disp = offset};
+    Assembler::Operand mem{.base = masked, .disp = offset};
     switch (size) {
       case Decoder::LoadStoreSize::k64bit:
         as_.Movq(mem, data);
@@ -591,10 +599,11 @@
     // Fix: load both halves into temps first, then commit both via SetReg.
     // LDPSW sign-extends each 32-bit element into its 64-bit target register.
     bool is_64bit_target = (size == Decoder::LoadStoreSize::k64bit) || is_signed;
-    Register val1 = Load(size, is_signed, is_64bit_target, base, 0);
+    Register masked = ApplyTbi(base);
+    Register val1 = LoadUntagged(size, is_signed, is_64bit_target, masked, 0);
     if (!success()) return;
-    Register val2 = Load(size, is_signed, is_64bit_target, base,
-                         static_cast<int32_t>(scale));
+    Register val2 =
+        LoadUntagged(size, is_signed, is_64bit_target, masked, static_cast<int32_t>(scale));
     if (!success()) return;
     if (rt1 != 31) SetReg(rt1, val1);
     if (rt2 != 31) SetReg(rt2, val2);
@@ -603,9 +612,10 @@
   void StorePair(Decoder::LoadStoreSize size, Register base, int32_t offset,
                  Register data1, Register data2, uint8_t scale) {
     UNUSED(offset);  // Already applied by caller in semantics_player.
-    Store(size, base, 0, data1);
+    Register masked = ApplyTbi(base);
+    StoreUntagged(size, masked, 0, data1);
     if (!success()) return;
-    Store(size, base, static_cast<int32_t>(scale), data2);
+    StoreUntagged(size, masked, static_cast<int32_t>(scale), data2);
   }
 
   // Apply the correct 32->64 extension to the offset

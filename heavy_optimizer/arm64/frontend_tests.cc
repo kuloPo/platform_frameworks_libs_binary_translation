@@ -4260,6 +4260,37 @@ TEST_F(Arm64HeavyOptimizerFrontendTest, MovAliasPreservesSourceFlagsAndZeroExten
 // Load/store pair (LDP / STP).
 //
 
+TEST_F(Arm64HeavyOptimizerFrontendTest, PairKeepsRecoveryForEachMemoryAccess) {
+  // STP/LDP X, STP/LDP W, and LDPSW, all based at X2.
+  for (uint32_t insn : {0xa9000440u, 0xa9400440u, 0x29000440u, 0x29400440u, 0x69400440u}) {
+    uint32_t code[] = {insn};
+    MachineCode mc;
+    auto [stop, ok, count] =
+        HeavyOptimizeRegion(ToGuestAddr(code), &mc, {.end_pc = ToGuestAddr(code) + sizeof(code)});
+    ASSERT_TRUE(ok);
+    ASSERT_EQ(count, 1u);
+    EXPECT_EQ(stop, ToGuestAddr(code) + sizeof(code));
+    ScopedExecRegion exec(&mc);
+    EXPECT_EQ(exec.recovery_map().size(), 2u);
+  }
+}
+
+TEST_F(Arm64HeavyOptimizerFrontendTest, TaggedPairRoundTripWithAliasedBase) {
+  uint64_t buf[2] = {};
+  static const uint32_t code[] = {StpX(0, 1, 2, 0), LdpX(2, 3, 2, 0)};
+  state_.cpu.x[0] = 0x1122334455667788ULL;
+  state_.cpu.x[1] = 0x99aabbccddeeff00ULL;
+  state_.cpu.x[2] = ToGuestAddr(buf) | 0xab00000000000000ULL;
+  GuestAddr end_pc = ToGuestAddr(code) + sizeof(code);
+  bool ok = false;
+  EXPECT_EQ(RunRegion(&state_, code, end_pc, &ok), end_pc);
+  ASSERT_TRUE(ok);
+  EXPECT_EQ(buf[0], 0x1122334455667788ULL);
+  EXPECT_EQ(buf[1], 0x99aabbccddeeff00ULL);
+  EXPECT_EQ(state_.cpu.x[2], buf[0]);
+  EXPECT_EQ(state_.cpu.x[3], buf[1]);
+}
+
 // STP then LDP round-trip through a static buffer. STP X0,X1,[X2] writes two
 // 64-bit slots; LDP X3,X4,[X2] reads them back.
 TEST_F(Arm64HeavyOptimizerFrontendTest, StpLdpRoundTrip) {

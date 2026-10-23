@@ -606,6 +606,14 @@ class HeavyOptimizerFrontend {
   }
 
  private:
+  // Each access retains its own recovery block after sharing the TBI mask.
+  Register LoadUntagged(Decoder::LoadStoreSize size,
+                        bool is_signed,
+                        bool is_64bit_target,
+                        Register masked,
+                        int32_t offset);
+  void StoreUntagged(Decoder::LoadStoreSize size, Register masked, int32_t offset, Register data);
+
   // Out-of-line so the trace/atomic machinery never inlines into the many bail
   // sites. Called from Undefined() only when Tracing::IsOn().
   void RecordBail(BailReason reason);
