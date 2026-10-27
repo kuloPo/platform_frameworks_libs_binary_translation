@@ -137,7 +137,10 @@ void ProcessGuestSignal(GuestThread* thread, const Guest_sigaction* sa, Guest_si
   GuestCall guest_call;
   guest_call.AddArgInt32(info->si_signo);
   guest_call.AddArgGuestAddr(ToGuestAddr(info));
+  // region digitalis
+  // guest_call.AddArgGuestAddr(ToGuestAddr(ctx.ptr()));
   guest_call.AddArgGuestAddr(ucontext_addr);
+  // endregion
   guest_call.RunVoid(sa->guest_sa_sigaction);
   TRACE("signal %d delivered", info->si_signo);
 
