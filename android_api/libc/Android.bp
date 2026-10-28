@@ -51,3 +51,13 @@ cc_library_shared {
     },
 }
 // endregion
+
+cc_test {
+    name: "berberis_free_quarantine_test",
+    host_supported: true,
+    srcs: [
+        "free_quarantine.cc",
+        "free_quarantine_test.cc",
+    ],
+    cflags: ["-DNATIVE_BRIDGE_GUEST_ARCH_ARM64"],
+}

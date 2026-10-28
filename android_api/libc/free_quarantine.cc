@@ -36,6 +36,10 @@
 // Bounded memory; each pointer is freed exactly once (just deferred). This brings
 // Berberis's free timing closer to real hardware so benign guest UAFs stay benign.
 
+// Query allocation sizes for accounting without accessing allocator padding.
+#define __BIONIC_DISABLE_MALLOC_USABLE_SIZE_FORTIFY_WARNINGS
+
+#include <malloc.h>
 #include <stddef.h>
 
 #if defined(NATIVE_BRIDGE_GUEST_ARCH_ARM64)
@@ -49,6 +53,8 @@ extern "C" void __real_free(void* ptr);
 namespace {
 
 constexpr size_t kQuarantineSize = 1024;
+// Bound retained allocation bytes to 1 GiB across the 1024-entry ring.
+constexpr size_t kMaxQuarantinedAllocationSize = 1024 * 1024;
 std::atomic<void*> g_quarantine[kQuarantineSize];
 std::atomic<uint64_t> g_quarantine_idx{0};
 
@@ -63,7 +69,7 @@ void* QuarantineSwap(void* ptr) {
 
 extern "C" void __wrap_free(void* ptr) {
 #if defined(NATIVE_BRIDGE_GUEST_ARCH_ARM64)
-  if (ptr == nullptr) {
+  if (ptr == nullptr || malloc_usable_size(ptr) > kMaxQuarantinedAllocationSize) {
     __real_free(ptr);
     return;
   }
