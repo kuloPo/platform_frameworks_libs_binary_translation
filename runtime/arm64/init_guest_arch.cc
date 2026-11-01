@@ -16,10 +16,16 @@
 
 #include "berberis/runtime/init_guest_arch.h"
 
+// region digitalis
+#include "berberis/base/mmap.h"
+// endregion
+
 namespace berberis {
 
 void InitGuestArch() {
-  // Nothing special for arm64
+  // region digitalis
+  EnableCodeWindow();
+  // endregion
 }
 
 }  // namespace berberis
