@@ -143,6 +143,10 @@ class NdktNativeBridge {
 
   bool IsHostHandle(void* handle) const;
 
+  // region digitalis
+  void LoadGuestVulkan();
+  // endregion
+
  private:
   bool FinalizeInit();
   native_bridge_namespace_t* CreateNativeBridgeNamespace(android_namespace_t* host_namespace,
@@ -479,6 +483,21 @@ bool NdktNativeBridge::FinalizeInit() {
   return true;
 }
 
+// region digitalis
+void NdktNativeBridge::LoadGuestVulkan() {
+  // The guest libvulkan.so stub intercepts its symbols when it is loaded, which loads the libvulkan
+  // proxy. The proxy registers the wrappers for the Vulkan functions that a guest layer exports.
+  static const bool loaded = [this] {
+    if (guest_loader_->DlOpenExt("libvulkan.so", RTLD_NOW, nullptr) != nullptr) {
+      return true;
+    }
+    TRACE_AND_ALOGE("Unable to load guest libvulkan.so: %s", DlError());
+    return false;
+  }();
+  UNUSED(loaded);
+}
+// endregion
+
 NdktNativeBridge g_ndkt_native_bridge;
 
 // Runtime values must be non-NULL, otherwise native bridge will be disabled.
@@ -574,6 +593,26 @@ void* native_bridge_loadLibrary(const char* libpath, int flag) {
   return g_ndkt_native_bridge.LoadLibrary(libpath, flag);
 }
 
+// region digitalis
+// The host Vulkan loader looks up the entry points of a layer library through the native bridge
+// without a shorty: the vkEnumerate*Properties functions, and <layer>GetInstanceProcAddr and
+// <layer>GetDeviceProcAddr or their vk-prefixed names. Their wrappers are registered by the
+// libvulkan proxy, which is loaded only once the guest loads libvulkan.so, and a layer does not
+// need to link it. The layer-prefixed names have the signatures of the vk-prefixed ones.
+const char* GetVulkanLayerFunctionName(const char* name) {
+  if (berberis::EndsWith(name, "GetInstanceProcAddr")) {
+    return "vkGetInstanceProcAddr";
+  }
+  if (berberis::EndsWith(name, "GetDeviceProcAddr")) {
+    return "vkGetDeviceProcAddr";
+  }
+  if (berberis::StartsWith(name, "vkEnumerate")) {
+    return name;
+  }
+  return nullptr;
+}
+// endregion
+
 void* native_bridge_getTrampolineWithJNICallType(void* handle,
                                                  const char* name,
                                                  const char* shorty,
@@ -606,6 +645,15 @@ void* native_bridge_getTrampolineWithJNICallType(void* handle,
   }
 
   berberis::HostCode result = berberis::WrapKnownGuestFunction(guest_addr, name);
+  // region digitalis
+  if (result == nullptr) {
+    if (const char* known_name = GetVulkanLayerFunctionName(name)) {
+      g_ndkt_native_bridge.LoadGuestVulkan();
+      // A missing Vulkan wrapper must not fall back to the incompatible NativeActivity signature.
+      return const_cast<void*>(berberis::WrapKnownGuestFunction(guest_addr, known_name));
+    }
+  }
+  // endregion
   if (result == nullptr) {
     // No wrapper is registered for this function name.
     // This usually happens for ANativeActivity_onCreate renamed with android.app.func_name.
