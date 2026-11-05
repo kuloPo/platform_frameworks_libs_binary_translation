@@ -539,10 +539,6 @@ void SetAppPropertiesFromCodeCachePath(const char* private_dir) {
 bool native_bridge_initialize(const android::NativeBridgeRuntimeCallbacks* runtime_cbs,
                               const char* private_dir,
                               const char* instruction_set) {
-  LOG_NB("native_bridge_initialize(runtime_callbacks=%p, private_dir='%s', app_isa='%s')",
-         runtime_cbs,
-         private_dir ? private_dir : "(null)",
-         instruction_set ? instruction_set : "(null)");
   auto* env = GetAppEnvByIsa(instruction_set);
   if (env == nullptr) {
     return false;
@@ -550,6 +546,13 @@ bool native_bridge_initialize(const android::NativeBridgeRuntimeCallbacks* runti
   g_runtime_callbacks = runtime_cbs;
   SetAppPropertiesFromCodeCachePath(private_dir);
   berberis::InitBerberis();
+
+  // region digitalis
+  LOG_NB("native_bridge_initialize(runtime_callbacks=%p, private_dir='%s', app_isa='%s')",
+         runtime_cbs,
+         private_dir ? private_dir : "(null)",
+         instruction_set ? instruction_set : "(null)");
+  // endregion
 
   // region digitalis
 #if defined(NATIVE_BRIDGE_GUEST_ARCH_ARM64)
