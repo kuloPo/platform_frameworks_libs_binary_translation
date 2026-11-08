@@ -28,11 +28,17 @@
 #include "berberis/guest_os_primitives/scoped_pending_signals.h"
 #include "berberis/guest_state/guest_addr.h"
 #include "berberis/guest_state/guest_state_opaque.h"
+// region digitalis
+#include "berberis/instrument/guest_thread.h"
+// endregion
 #include "berberis/runtime/execute_guest.h"
 #include "berberis/runtime_primitives/runtime_library.h"
 
 #include "guest_signal_action.h"
 #include "guest_thread_manager_impl.h"
+// region digitalis
+#include "guest_thread_map.h"
+// endregion
 #include "scoped_signal_blocker.h"
 
 namespace berberis {
@@ -113,6 +119,28 @@ int RunClonedGuestThread(void* arg) {
   LOG_ALWAYS_FATAL("cloned thread didn't exit");
   return 0;
 }
+
+// region digitalis
+// A CLONE_VFORK child runs in our address space, so the thread table entry it inserted for its
+// pid is in our table. The parent resumes only after the child has called execve or exited, so
+// the child no longer uses this memory, yet nothing else removes that entry: every guest
+// popen/system/posix_spawn would leave one behind, and once the kernel hands that pid out again as
+// the tid of one of our threads, inserting that thread fails. A child that left through the exit
+// syscall has already removed and destroyed its GuestThread itself.
+// Must be called with signals blocked.
+void ReleaseVforkChild(pid_t pid, GuestThread* thread) {
+  GuestThreadMap* map = GuestThreadMap::GetInstance();
+  if (map->FindThread(pid) != thread) {
+    return;
+  }
+  map->RemoveThread(pid);
+  if (kInstrumentGuestThread) {
+    OnRemoveGuestThread(pid, thread);
+  }
+  TRACE("guest vfork child %d released", pid);
+  GuestThread::Destroy(thread);
+}
+// endregion
 
 }  // namespace
 
@@ -204,6 +232,11 @@ pid_t CloneGuestThread(GuestThread* thread,
                 child_tid);
     if (pid != -1) {
       CHECK_EQ(0, sem_wait(&info.sem));  // Wait with blocked signals to avoid EINTR.
+      // region digitalis
+      if (flags & CLONE_VFORK) {
+        ReleaseVforkChild(pid, info.thread);
+      }
+      // endregion
     }
   }
 

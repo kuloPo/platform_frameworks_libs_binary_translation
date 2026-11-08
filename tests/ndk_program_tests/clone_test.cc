@@ -18,7 +18,13 @@
 
 #include <linux/sched.h>
 #include <sched.h>
+// region digitalis
+#include <sys/syscall.h>
+// endregion
 #include <sys/wait.h>
+// region digitalis
+#include <unistd.h>
+// endregion
 
 #include <atomic>
 #include <csignal>
@@ -137,5 +143,26 @@ TEST(Clone, CloneVMChildOutlivingParent) {
     sched_yield();
   }
 }
+
+// region digitalis
+// A vfork child shares the parent's memory and leaves either through exit_group (_exit) or through
+// the plain exit syscall. After either, the parent must keep working and be able to fork again.
+TEST(Clone, VforkChildExit) {
+  for (int i = 0; i < 64; i++) {
+    pid_t pid = vfork();
+    if (pid == 0) {
+      if (i % 2) {
+        syscall(__NR_exit, 7);
+      }
+      _exit(7);
+    }
+    ASSERT_GT(pid, 0);
+    int status;
+    ASSERT_EQ(pid, TEMP_FAILURE_RETRY(waitpid(pid, &status, 0)));
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 7);
+  }
+}
+// endregion
 
 }  // namespace
