@@ -34,6 +34,23 @@ class GuestThreadMap {
   GuestThread* RemoveThread(pid_t tid);
   GuestThread* FindThread(pid_t tid);
 
+  // region digitalis
+  // Removes the entry of tid if pred(thread) is true for its GuestThread, and returns that
+  // GuestThread, otherwise returns nullptr. The check and the removal happen under one lock, so of
+  // several threads that try to release the same entry only one gets it.
+  template <typename F>
+  GuestThread* RemoveThreadIf(pid_t tid, const F& pred) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = map_.find(tid);
+    if (it == map_.end() || !pred(it->second)) {
+      return nullptr;
+    }
+    GuestThread* thread = it->second;
+    map_.erase(it);
+    return thread;
+  }
+  // endregion
+
   // TODO(b/280551726): Replace template with function that accepts a function arg.
   template <typename F>
   void ForEachThread(const F& f) {

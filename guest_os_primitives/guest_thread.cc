@@ -18,6 +18,10 @@
 
 #include <sys/mman.h>  // mprotect
 
+// region digitalis
+#include <atomic>
+// endregion
+
 #if defined(__BIONIC__)
 #include "private/bionic_constants.h"
 #include "private/bionic_tls.h"
@@ -55,6 +59,10 @@ namespace {
 
 const size_t kGuestThreadPageAlignedSize = AlignUpPageSize(sizeof(GuestThread));
 
+// region digitalis
+std::atomic<uint64_t> g_next_guest_thread_serial{1};
+// endregion
+
 }  // namespace
 
 // static
@@ -72,6 +80,9 @@ GuestThread* GuestThread::Create() {
 
   GuestThread* thread = new (thread_storage) GuestThread;
   CHECK(thread);
+  // region digitalis
+  thread->serial_ = g_next_guest_thread_serial.fetch_add(1, std::memory_order_relaxed);
+  // endregion
 
   thread->state_ = CreateThreadState();
   if (!thread->state_) {

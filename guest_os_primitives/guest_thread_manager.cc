@@ -44,6 +44,28 @@ void GuestThreadDtor(void* /* arg */) {
   DetachCurrentThread();
 }
 
+// region digitalis
+// Child processes that run in our memory (clone with CLONE_VM and without CLONE_THREAD) and their
+// threads insert their GuestThreads into our table. If such a process leaves through exit_group or
+// execve, nothing removes those entries, and once the kernel hands one of the tids out again to a
+// thread of ours, that thread would find a dead thread's GuestThread, whose guest stack may be
+// gone. No two live threads have the same tid, so an entry under the calling thread's tid that
+// belongs to a process other than the caller's (pid) was left by a thread that is gone. Release it.
+// Must be called with signals blocked.
+void ReleaseThreadOfGoneProcess(pid_t tid, pid_t pid) {
+  GuestThread* thread = GuestThreadMap::GetInstance()->RemoveThreadIf(
+      tid, [pid](GuestThread* entry) { return entry->GetProcessId() != pid; });
+  if (thread == nullptr) {
+    return;
+  }
+  if (kInstrumentGuestThread) {
+    OnRemoveGuestThread(tid, thread);
+  }
+  TRACE("guest thread %d of gone process %d released", tid, thread->GetProcessId());
+  GuestThread::Destroy(thread);
+}
+// endregion
+
 }  // namespace
 
 GuestThreadExitListenerFn RegisterGuestThreadExitListener(GuestThreadExitListenerFn new_listener) {
@@ -65,6 +87,9 @@ GuestThread* GetCurrentGuestThread() {
 }
 
 void ResetCurrentGuestThreadAfterFork(GuestThread* thread) {
+  // region digitalis
+  thread->SetProcessId(GetpidSyscall());
+  // endregion
   GuestThreadMap::GetInstance()->ResetThreadTable(GettidSyscall(), thread);
 #if defined(__BIONIC__)
   // Force (host) bionic to update cached tid if necessary
@@ -165,6 +190,9 @@ GuestThread* AttachCurrentThread(bool register_dtor, bool* attached) {
   ScopedSignalBlocker signal_blocker;
 
   pid_t tid = GettidSyscall();
+  // region digitalis
+  ReleaseThreadOfGoneProcess(tid, GetpidSyscall());
+  // endregion
   GuestThread* thread = GuestThreadMap::GetInstance()->FindThread(tid);
   if (thread) {
     // Thread was already attached.
@@ -201,6 +229,12 @@ void InsertCurrentThread(GuestThread* thread, bool register_dtor) {
 
   // The following code is not reentrant!
   ScopedSignalBlocker signal_blocker;
+
+  // region digitalis
+  pid_t pid = GetpidSyscall();
+  ReleaseThreadOfGoneProcess(tid, pid);
+  thread->SetProcessId(pid);
+  // endregion
 
   // Thread should not be already in the table!
   // If signal came after we checked tls cache or table but before we blocked signals, it should

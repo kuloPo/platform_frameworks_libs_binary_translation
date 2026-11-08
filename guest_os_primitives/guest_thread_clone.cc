@@ -123,17 +123,20 @@ int RunClonedGuestThread(void* arg) {
 // region digitalis
 // A CLONE_VFORK child runs in our address space, so the thread table entry it inserted for its
 // pid is in our table. The parent resumes only after the child has called execve or exited, so
-// the child no longer uses this memory, yet nothing else removes that entry: every guest
-// popen/system/posix_spawn would leave one behind, and once the kernel hands that pid out again as
-// the tid of one of our threads, inserting that thread fails. A child that left through the exit
-// syscall has already removed and destroyed its GuestThread itself.
+// the child no longer uses this memory. Every guest popen/system/posix_spawn comes through here,
+// so release the entry now rather than keep it, with the child's GuestThread and host stack, until
+// a thread of ours gets the same tid. The entry may be gone already: a child that left through the
+// exit syscall has removed and destroyed its GuestThread itself, and once the child is reaped, a
+// thread that gets its pid as tid releases the entry (see InsertCurrentThread and
+// AttachCurrentThread) and may insert a new GuestThread at the same address. So remove the entry
+// only if it still holds the child's GuestThread, identified by its serial.
 // Must be called with signals blocked.
-void ReleaseVforkChild(pid_t pid, GuestThread* thread) {
-  GuestThreadMap* map = GuestThreadMap::GetInstance();
-  if (map->FindThread(pid) != thread) {
+void ReleaseVforkChild(pid_t pid, uint64_t serial) {
+  GuestThread* thread = GuestThreadMap::GetInstance()->RemoveThreadIf(
+      pid, [serial](GuestThread* entry) { return entry->GetSerial() == serial; });
+  if (thread == nullptr) {
     return;
   }
-  map->RemoveThread(pid);
   if (kInstrumentGuestThread) {
     OnRemoveGuestThread(pid, thread);
   }
@@ -223,6 +226,10 @@ pid_t CloneGuestThread(GuestThread* thread,
   {
     ScopedSignalBlocker signal_blocker;
     info.mask = *signal_blocker.old_mask();
+    // region digitalis
+    // Once clone returns, info.thread may already be destroyed.
+    uint64_t child_serial = info.thread->GetSerial();
+    // endregion
     pid = clone(RunClonedGuestThread,
                 info.thread->GetHostStackTop(),
                 flags & ~CLONE_SETTLS,
@@ -234,7 +241,7 @@ pid_t CloneGuestThread(GuestThread* thread,
       CHECK_EQ(0, sem_wait(&info.sem));  // Wait with blocked signals to avoid EINTR.
       // region digitalis
       if (flags & CLONE_VFORK) {
-        ReleaseVforkChild(pid, info.thread);
+        ReleaseVforkChild(pid, child_serial);
       }
       // endregion
     }

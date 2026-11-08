@@ -19,6 +19,9 @@
 
 #include <csetjmp>  // jmp_buf
 #include <csignal>  // stack_t
+// region digitalis
+#include <cstdint>
+// endregion
 #include <memory>
 
 #include "berberis/guest_state/guest_addr.h"
@@ -106,6 +109,17 @@ class GuestThread {
   // Use to unshare signal handlers for CLONE_VM without CLONE_SIGHAND.
   void CloneSignalActionsTableFrom(GuestSignalActionsTable* from_table);
 
+  // region digitalis
+  // Pid of the process (thread group) of the thread that uses this GuestThread. The thread table is
+  // shared with child processes that run in our memory (clone with CLONE_VM and without
+  // CLONE_THREAD), so it can hold threads of several processes.
+  void SetProcessId(pid_t pid) { process_id_ = pid; }
+  [[nodiscard]] pid_t GetProcessId() const { return process_id_; }
+  // Unique among the GuestThreads created in this memory, so it tells this GuestThread apart from
+  // one created after it was destroyed, which may get the same address.
+  [[nodiscard]] uint64_t GetSerial() const { return serial_; }
+  // endregion
+
  private:
   GuestThread() = default;
   static GuestThread* Create();
@@ -148,6 +162,11 @@ class GuestThread {
 
   void* sig_alt_stack_ = nullptr;
   size_t sig_alt_stack_size_ = 0;
+
+  // region digitalis
+  pid_t process_id_ = 0;
+  uint64_t serial_ = 0;
+  // endregion
 };
 
 using GuestThreadExitListenerFn = void (*)(pid_t);
