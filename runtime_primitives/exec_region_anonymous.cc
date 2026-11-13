@@ -56,10 +56,7 @@ ExecRegion CreateImpl(size_t size, bool fatal) {
   FtruncateOrDie(fd, static_cast<off64_t>(size));
 
 #if defined(__x86_64__)
-  // region digitalis
-  // constexpr int kBerberisFlags = kMmapBerberis32Bit;
-  constexpr int kBerberisFlags = kMmapBerberisCode32Bit;
-  // endregion
+  constexpr int kBerberisFlags = kMmapBerberis32Bit;
 #else
   // TODO(b/363611588): enable for other backends (arm64/riscv64)
   constexpr int kBerberisFlags = 0;

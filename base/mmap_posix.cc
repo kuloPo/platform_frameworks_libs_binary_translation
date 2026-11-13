@@ -32,11 +32,6 @@
 #include "berberis/base/bit_util.h"
 #include "berberis/base/checks.h"
 
-// region digitalis
-// Kemu kernel mmap flag: only map between 2 GiB and 4 GiB.
-#define MAP_DIGITALIS 0x200
-// endregion
-
 namespace berberis {
 
 #if defined(__LP64__) && !defined(__x86_64__)
@@ -122,14 +117,6 @@ void* TryMmap32Bit(MmapImplArgs args) {
 #endif  // defined(__LP64__) && !defined(__x86_64__)
 
 void* MmapImpl(MmapImplArgs args) {
-  // region digitalis
-  // The Kemu kernel ignores MAP_32BIT when MAP_DIGITALIS is set, and other
-  // kernels ignore MAP_DIGITALIS, so code gets kMmapBerberis32Bit placement there.
-  if ((args.berberis_flags & kMmapBerberisCode32Bit) != 0) {
-    args.flags |= MAP_DIGITALIS;
-    args.berberis_flags |= kMmapBerberis32Bit;
-  }
-  // endregion
   if ((args.berberis_flags & kMmapBerberis32Bit) != 0) {
     // This doesn't make sense for MAP_FIXED
     CHECK_EQ(args.flags & MAP_FIXED, 0);

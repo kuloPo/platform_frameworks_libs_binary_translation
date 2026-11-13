@@ -54,10 +54,6 @@ constexpr bool IsAlignedPageSize(T x) {
 
 enum MmapBerberisFlags {
   kMmapBerberis32Bit = 1,
-  // region digitalis
-  // Executable code: [2 GiB, 4 GiB) with MAP_DIGITALIS, else kMmapBerberis32Bit placement.
-  kMmapBerberisCode32Bit = 2,
-  // endregion
 };
 
 struct MmapImplArgs {

@@ -50,10 +50,7 @@ ExecRegion ExecRegionElfBackedFactory::Create(size_t size) {
                                    .size = load_size,
                                    .prot = PROT_NONE,
                                    .flags = MAP_ANONYMOUS | MAP_PRIVATE,
-                                   // region digitalis
-                                   // .berberis_flags = kMmapBerberis32Bit});
-                                   .berberis_flags = kMmapBerberisCode32Bit});
-  // endregion
+                                   .berberis_flags = kMmapBerberis32Bit});
 
   android_dlextinfo dlextinfo{.flags = ANDROID_DLEXT_FORCE_LOAD | ANDROID_DLEXT_RESERVED_ADDRESS,
                               .reserved_addr = load_addr,
